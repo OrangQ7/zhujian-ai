@@ -187,5 +187,11 @@ async function showHistory(){if(inspectionBusy())return;modal('<h2>历史检查<
 async function reopenInspection(id){if(historySaving||inspectionBusy())return;historySaving=true;try{const record=await InspectionHistory.get(id);if(!record)throw Error('记录不存在');if(photos.length&&inspectionId!==id)await saveCurrentHistory('draft');photos=record.photos;photos.forEach(p=>{p.busy=false});project=record.project;inspectionId=record.id;sel=0;open=0;view='check';persist();$('#modal').close();render();window.scrollTo(0,0);toast('已打开历史检查')}catch(e){toast('打开失败，当前检查已保留')}finally{historySaving=false}}
 document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.archiveConfirm)archiveCurrent(b.dataset.archiveConfirm==='finish');if(b.dataset.historyOpen)reopenInspection(b.dataset.historyOpen);if(b.dataset.action==='new-inspection')startInspection();if(b.dataset.action==='finish-inspection')startInspection(true);if(b.dataset.action==='history')showHistory()});
 
-render();
+async function startFreshPage(){
+  if(!photos.length){render();return}
+  $('#app').innerHTML='<div class="start-panel"><h2>正在保存上次检查…</h2></div>';
+  try{await saveCurrentHistory('draft');resetInspection()}
+  catch(e){render();toast('上次记录暂时无法归档，已保留原记录，请先下载备份后新建')}
+}
+startFreshPage();
 </script></body></html>
