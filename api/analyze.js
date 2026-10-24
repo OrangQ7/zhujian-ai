@@ -67,32 +67,67 @@ async function handler(req,res) {
   const image=body?.image;
   if(typeof image!=='string'||image.length>3_500_000||!/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(image))return res.status(400).json({error:'请上传小于约2.5MB的图片'});
   const model=process.env.ARK_MODEL||'doubao-seed-2-1-pro-260915';
-  log('model_request_started',{model});
+  // stream=true 时按行返回 NDJSON：先 started，模型写作中推送 stage/finding，最后一行是 result 或 error。
+  // 进度只取自模型真实写出的内容；最终结果与一次性返回完全相同
+  const stream=body.stream===true;
+  const emit=event=>{if(stream)res.write(JSON.stringify(event)+'\n')};
+  const send=(status,payload)=>{if(!stream)return res.status(status).json(payload);emit({type:status===200?'result':'error',...payload});return res.end()};
+  if(stream){res.status(200);res.setHeader('Content-Type','application/x-ndjson; charset=utf-8');res.setHeader('X-Accel-Buffering','no');emit({type:'started'})}
+  log('model_request_started',{model,stream});
   try {
     const response=await fetch('https://ark.cn-beijing.volces.com/api/v3/responses',{
       method:'POST',signal:AbortSignal.timeout(150000),
       headers:{Authorization:`Bearer ${process.env.ARK_API_KEY.trim()}`,'Content-Type':'application/json'},
-      body:JSON.stringify({model,max_output_tokens:7000,thinking:{type:'disabled'},text:{format:{type:'json_schema',name:'inspection_result',strict:true,schema}},
+      body:JSON.stringify({model,stream,max_output_tokens:7000,thinking:{type:'disabled'},text:{format:{type:'json_schema',name:'inspection_result',strict:true,schema}},
         input:[{role:'system',content:[{type:'input_text',text:INSTRUCTIONS}]},{role:'user',content:[{type:'input_image',image_url:image},{type:'input_text',text:'工程类型：'+(txt(body.type,100)||'未填写')+'。适用规范：'+(txt(body.standards,800)||'未填写')+'。检查部位：'+txt(body.part,300)+'。现场说明：'+txt(body.note,800)}]}]})
     });
     if(!response.ok) {
       let detail={};try{detail=await response.json()}catch{}
       const upstreamCode=String(detail.error?.code||'').slice(0,100);
       log('model_request_failed',{upstreamStatus:response.status,upstreamCode});
-      return res.status(502).json({error:response.status===401?'豆包鉴权失败，请检查云端密钥':response.status===429?'模型繁忙或额度受限，请稍后重试':'豆包调用失败，请检查模型开通状态',upstreamStatus:response.status,upstreamCode,requestId});
+      return send(502,{error:response.status===401?'豆包鉴权失败，请检查云端密钥':response.status===429?'模型繁忙或额度受限，请稍后重试':'豆包调用失败，请检查模型开通状态',upstreamStatus:response.status,upstreamCode,requestId});
     }
-    const data=await response.json();
+    let data,text;
+    if(stream){const progress=watchProgress(emit);({data,text}=await readModelStream(response,progress))}
+    else {data=await response.json();text=outputText(data)}
     log('model_response_received',{status:data.status,usage:data.usage||null,responseId:data.id});
-    if(data.status==='incomplete')return res.status(502).json({error:'模型输出被截断，未生成完整记录，请重试',code:'MODEL_INCOMPLETE',requestId,usage:data.usage||null});
-    if(data.status==='failed'||data.error)return res.status(502).json({error:'模型未完成分析，请稍后重试',code:'MODEL_FAILED',requestId});
-    const text=(data.output||[]).filter(x=>x.type==='message').flatMap(x=>x.content||[]).filter(x=>x.type==='output_text'&&typeof x.text==='string').map(x=>x.text).join('');
-    let parsed;try{parsed=parseModelText(text)}catch{log('invalid_model_json',{textLength:text.length,outputTypes:(data.output||[]).map(x=>x.type),textHead:text.slice(0,300),textTail:text.slice(-300)});return res.status(502).json({error:'模型返回的记录无法解析，请稍后重试',code:text.length?'INVALID_MODEL_JSON':'EMPTY_MODEL_TEXT',requestId,usage:data.usage||null,diagnostic:{outputCount:(data.output||[]).length,text:text.slice(0,12000)}})}
-    const result=normalize(parsed);log('analysis_completed',{model,findingCount:result.findings.length,boxedCount:result.findings.filter(f=>f.bbox).length,outputTokens:data.usage?.output_tokens});
-    return res.status(200).json({...result,usage:data.usage||null,model:data.model||model,requestId,elapsedMs:Date.now()-started});
+    if(data.status==='incomplete')return send(502,{error:'模型输出被截断，未生成完整记录，请重试',code:'MODEL_INCOMPLETE',requestId,usage:data.usage||null});
+    if(data.status==='failed'||data.error)return send(502,{error:'模型未完成分析，请稍后重试',code:'MODEL_FAILED',requestId});
+    let parsed;try{parsed=parseModelText(text)}catch{log('invalid_model_json',{textLength:text.length,outputTypes:(data.output||[]).map(x=>x.type),textHead:text.slice(0,300),textTail:text.slice(-300)});return send(502,{error:'模型返回的记录无法解析，请稍后重试',code:text.length?'INVALID_MODEL_JSON':'EMPTY_MODEL_TEXT',requestId,usage:data.usage||null,diagnostic:{outputCount:(data.output||[]).length,text:text.slice(0,12000)}})}
+    const result=normalize(parsed);log('analysis_completed',{model,stream,findingCount:result.findings.length,boxedCount:result.findings.filter(f=>f.bbox).length,outputTokens:data.usage?.output_tokens});
+    return send(200,{...result,usage:data.usage||null,model:data.model||model,requestId,elapsedMs:Date.now()-started});
   } catch(e) {
     log('analysis_failed',{errorType:e.name,message:String(e.message).slice(0,200),cause:String(e.cause?.code||e.cause?.message||'').slice(0,200)});
-    return res.status(502).json({error:e.name==='TimeoutError'?'等待豆包响应超时，本次未取得识别结果。请稍后重试':'识别暂未完成，请稍后重试',requestId});
+    return send(502,{error:e.name==='TimeoutError'?'等待豆包响应超时，本次未取得识别结果。请稍后重试':'识别暂未完成，请稍后重试',requestId});
   }
+}
+const outputText=data=>(data.output||[]).filter(x=>x.type==='message').flatMap(x=>x.content||[]).filter(x=>x.type==='output_text'&&typeof x.text==='string').map(x=>x.text).join('');
+// 读取豆包的 SSE 流：累积文字增量，拿到 completed/incomplete/failed 事件里的完整响应
+async function readModelStream(response,onDelta){
+  let buf='',text='',final=null;const dec=new TextDecoder();
+  for await(const chunk of response.body){
+    buf+=dec.decode(chunk,{stream:true});let i;
+    while((i=buf.indexOf('\n'))>=0){
+      const line=buf.slice(0,i).trim();buf=buf.slice(i+1);
+      if(!line.startsWith('data:'))continue;
+      let ev;try{ev=JSON.parse(line.slice(5))}catch{continue}
+      if(ev.type==='response.output_text.delta'&&typeof ev.delta==='string'){text+=ev.delta;onDelta(text)}
+      else if(/^response\.(completed|incomplete|failed)$/.test(ev.type))final=ev.response||{};
+      else if(ev.type==='error')final={status:'failed',error:ev};
+    }
+  }
+  final=final||{status:'failed',error:'STREAM_ENDED'};
+  return {data:final,text:outputText(final)||text};
+}
+// 从模型已写出的 JSON 片段里取真实进度：开始写、每个问题标题、写到核实问题和推荐规范
+function watchProgress(emit){
+  const seen=new Set();let count=0;
+  return text=>{
+    if(!seen.has('writing')){seen.add('writing');emit({type:'stage',stage:'writing'})}
+    const items=[...text.matchAll(/"kind"\s*:\s*"(\w+)"[^{}]*?"title"\s*:\s*"((?:[^"\\]|\\.)*)"/g)];
+    for(;count<items.length;count++){const [,kind,raw]=items[count];if(kind==='image_quality')continue;let title=raw;try{title=JSON.parse('"'+raw+'"')}catch{}emit({type:'finding',kind,title:title.slice(0,150)})}
+    for(const [key,stage] of [['"questions"','questions'],['"suggested_standards"','standards']])if(!seen.has(stage)&&text.includes(key)){seen.add(stage);emit({type:'stage',stage})}
+  };
 }
 module.exports=handler;
 module.exports.normalize=normalize;
