@@ -1,4 +1,4 @@
-const { timingSafeEqual } = require('node:crypto');
+
 
 const INSTRUCTIONS = `你是施工现场检查辅助工具。仅依据提供的照片和检查人补充内容记录可见事实。
 不能从照片编造尺寸、检测值、隐蔽状况或具体规范条号；未拍到不等于现场缺失。
@@ -8,11 +8,6 @@ const INSTRUCTIONS = `你是施工现场检查辅助工具。仅依据提供的�
 {"findings":[{"title":"简短问题标题","description":"部位和可见事实","risk":"高|中|低","severity":"一般隐患|不符合项|一般缺陷","deadline":"整改时限建议","rectification":"可执行整改建议","basis":[{"code":"规范编号，未知留空","name":"规范名称","clause":"条号，未知留空","requirement":"要求概述"}],"bbox":null}],"questions":[{"q":"需要现场核实的问题","affects":[1]}]}
 affects对应findings中从1开始的问题序号。最多输出10项；没有可见问题时findings为空数组。`;
 
-function validCode(value, expected) {
-  if (typeof value !== 'string' || typeof expected !== 'string') return false;
-  const a=Buffer.from(value), b=Buffer.from(expected);
-  return a.length === b.length && timingSafeEqual(a,b);
-}
 const txt=(v,n=1600)=>typeof v==='string'?v.slice(0,n):'';
 function normalize(raw) {
   if(!raw || !Array.isArray(raw.findings)) throw new Error('INVALID_OUTPUT');
@@ -39,9 +34,7 @@ async function handler(req,res) {
   res.setHeader('Access-Control-Allow-Headers','Content-Type, Authorization');
   if(req.method==='OPTIONS')return res.status(204).end();
   if(req.method!=='POST')return res.status(405).json({error:'只支持POST请求'});
-  if(!process.env.ARK_API_KEY||!process.env.APP_ACCESS_CODE)return res.status(503).json({error:'后台尚未配置模型密钥或使用口令'});
-  const token=(req.headers.authorization||'').replace(/^Bearer /,'');
-  if(!validCode(token,process.env.APP_ACCESS_CODE))return res.status(401).json({error:'使用口令不正确'});
+  if(!process.env.ARK_API_KEY)return res.status(503).json({error:'后台尚未配置模型密钥'});
   let body=req.body;
   if(typeof body==='string'){try{body=JSON.parse(body)}catch{return res.status(400).json({error:'请求格式无效'})}}
   const image=body?.image;
