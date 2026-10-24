@@ -50,7 +50,7 @@ async function handler(req,res) {
   const log=(event,info={})=>console.info(JSON.stringify({requestId,event,elapsedMs:Date.now()-started,...info}));
   res.setHeader('X-Inspection-Request-Id',requestId);
   res.setHeader('Cache-Control','no-store');
-  const allowed=new Set(['https://orangq7.github.io',...(process.env.ALLOWED_ORIGINS||'').split(',').filter(Boolean)]);
+  const allowed=new Set(['https://orangq7.github.io','https://zhujianai.site','https://www.zhujianai.site',...(process.env.ALLOWED_ORIGINS||'').split(',').filter(Boolean)]);
   const origin=req.headers.origin;
   const sameOrigin=origin===`https://${req.headers.host}`||origin===`http://${req.headers.host}`;
   if(origin&&!allowed.has(origin)&&!sameOrigin)return res.status(403).json({error:'此网站未获授权'});
