@@ -3,5 +3,5 @@
   "private": true,
   "version": "1.0.0",
   "engines": { "node": "22.x" },
-  "scripts": { "test": "node --test tests/backend.test.cjs" }
+  "scripts": { "test": "node --test tests/*.test.cjs" }
 }
