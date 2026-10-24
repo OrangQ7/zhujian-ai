@@ -21,6 +21,10 @@
 | --- | --- |
 | ARK_API_KEY | 新创建的火山方舟密钥 |
 | ARK_MODEL | doubao-seed-2-1-pro-260915 |
+| ARK_MODEL_FAST | 可选：「快速识别」用的轻量视觉模型 Model ID；不填则快速识别也用 ARK_MODEL |
+| ARK_API_KEY_FAST | 可选：轻量模型所在账号的密钥；不填则用 ARK_API_KEY |
+
+「深度思考」始终使用 ARK_MODEL 和 ARK_API_KEY。
 
 
 4. Deploy。之后修改环境变量须重新部署。

@@ -68,14 +68,16 @@ async function handler(req,res) {
   if(typeof body==='string'){try{body=JSON.parse(body)}catch{return res.status(400).json({error:'请求格式无效'})}}
   const image=body?.image;
   if(typeof image!=='string'||image.length>3_500_000||!/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(image))return res.status(400).json({error:'请上传小于约2.5MB的图片'});
-  // 快速识别用轻量模型（ARK_MODEL_FAST，未配置则用主模型）且不开思考；深度思考用主模型开启思考并逐区域复核
-  const deep=body.mode==='deep';
-  const model=(deep?'':process.env.ARK_MODEL_FAST)||process.env.ARK_MODEL||'doubao-seed-2-1-pro-260915';
+  // 快速识别用轻量模型（ARK_MODEL_FAST，可配单独的 ARK_API_KEY_FAST）且不开思考；未配置轻量模型时用主模型和主密钥
+  // 深度思考用主模型（ARK_MODEL + ARK_API_KEY）开启思考并逐区域复核
+  const deep=body.mode==='deep',light=!deep&&!!process.env.ARK_MODEL_FAST;
+  const model=(light?process.env.ARK_MODEL_FAST:process.env.ARK_MODEL)||'doubao-seed-2-1-pro-260915';
+  const apiKey=((light&&process.env.ARK_API_KEY_FAST)||process.env.ARK_API_KEY).trim();
   log('model_request_started',{model,mode:deep?'deep':'fast'});
   try {
     const response=await fetch('https://ark.cn-beijing.volces.com/api/v3/responses',{
       method:'POST',signal:AbortSignal.timeout(deep?170000:110000),
-      headers:{Authorization:`Bearer ${process.env.ARK_API_KEY.trim()}`,'Content-Type':'application/json'},
+      headers:{Authorization:`Bearer ${apiKey}`,'Content-Type':'application/json'},
       body:JSON.stringify({model,max_output_tokens:deep?20000:7000,thinking:{type:deep?'enabled':'disabled'},text:{format:{type:'json_schema',name:'inspection_result',strict:true,schema}},
         input:[{role:'system',content:[{type:'input_text',text:deep?INSTRUCTIONS+'\n'+DEEP_INSTRUCTIONS:INSTRUCTIONS}]},{role:'user',content:[{type:'input_image',image_url:image},{type:'input_text',text:'工程类型：'+(txt(body.type,100)||'未填写')+'。适用规范：'+(txt(body.standards,800)||'未填写')+'。检查部位：'+txt(body.part,300)+'。现场说明：'+txt(body.note,800)}]}]})
     });
@@ -83,7 +85,7 @@ async function handler(req,res) {
       let detail={};try{detail=await response.json()}catch{}
       const upstreamCode=String(detail.error?.code||'').slice(0,100);
       log('model_request_failed',{upstreamStatus:response.status,upstreamCode});
-      return res.status(502).json({error:response.status===401?'豆包鉴权失败，请检查云端密钥':response.status===429?'模型繁忙或额度受限，请稍后重试':'豆包调用失败，请检查模型开通状态',upstreamStatus:response.status,upstreamCode,requestId});
+      return res.status(502).json({error:response.status===401?'豆包鉴权失败，请检查云端密钥 '+(light&&process.env.ARK_API_KEY_FAST?'ARK_API_KEY_FAST':'ARK_API_KEY'):response.status===429?'模型繁忙或额度受限，请稍后重试':'豆包调用失败，请检查模型开通状态',upstreamStatus:response.status,upstreamCode,requestId});
     }
     const data=await response.json();
     log('model_response_received',{status:data.status,usage:data.usage||null,responseId:data.id});
