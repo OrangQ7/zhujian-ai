@@ -55,7 +55,7 @@ async function handler(req,res) {
     const response=await fetch('https://ark.cn-beijing.volces.com/api/v3/responses',{
       method:'POST',signal:AbortSignal.timeout(110000),
       headers:{Authorization:`Bearer ${process.env.ARK_API_KEY.trim()}`,'Content-Type':'application/json'},
-      body:JSON.stringify({model:process.env.ARK_MODEL||'doubao-seed-2-1-pro-260915',max_output_tokens:6000,thinking:{type:'disabled'},
+      body:JSON.stringify({model:process.env.ARK_MODEL||'doubao-seed-2-1-pro-260915',max_output_tokens:6000,thinking:{type:'disabled'},text:{format:{type:'json_object'}},
         input:[{role:'system',content:[{type:'input_text',text:INSTRUCTIONS}]},{role:'user',content:[{type:'input_image',image_url:image},{type:'input_text',text:'检查部位：'+txt(body.part,300)+'。现场说明：'+txt(body.note,800)}]}]})
     });
     if(!response.ok) {
@@ -70,7 +70,10 @@ async function handler(req,res) {
     if(data.status==='failed'||data.error)return res.status(502).json({error:'模型未完成分析，请稍后重试',code:'MODEL_FAILED',requestId});
     const text=(data.output||[]).filter(x=>x.type==='message').flatMap(x=>x.content||[]).filter(x=>x.type==='output_text').map(x=>x.text).join('');
     const cleaned=text.trim().replace(/^```(?:json)?\s*/,'').replace(/\s*```$/,'');
-    let parsed;try{parsed=JSON.parse(cleaned)}catch{log('invalid_model_json');return res.status(502).json({error:'模型已响应，但记录格式不完整，请重试',requestId})}
+    let parsed;try{parsed=JSON.parse(cleaned)}catch{
+      try{const first=cleaned.indexOf('{'),last=cleaned.lastIndexOf('}');if(first<0||last<=first)throw new Error('NO_JSON');parsed=JSON.parse(cleaned.slice(first,last+1))}
+      catch{log('invalid_model_json',{textLength:text.length});return res.status(502).json({error:'模型已响应，但记录格式不完整，请重试',requestId})}
+    }
     const result=normalize(parsed);log('analysis_completed',{findingCount:result.findings.length});
     return res.status(200).json({...result,usage:data.usage||null,model:data.model||process.env.ARK_MODEL||'doubao-seed-2-1-pro-260915',requestId,elapsedMs:Date.now()-started});
   } catch(e) {
