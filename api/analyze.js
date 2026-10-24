@@ -70,7 +70,7 @@ async function handler(req,res) {
   log('model_request_started',{model});
   try {
     const response=await fetch('https://ark.cn-beijing.volces.com/api/v3/responses',{
-      method:'POST',signal:AbortSignal.timeout(110000),
+      method:'POST',signal:AbortSignal.timeout(150000),
       headers:{Authorization:`Bearer ${process.env.ARK_API_KEY.trim()}`,'Content-Type':'application/json'},
       body:JSON.stringify({model,max_output_tokens:7000,thinking:{type:'disabled'},text:{format:{type:'json_schema',name:'inspection_result',strict:true,schema}},
         input:[{role:'system',content:[{type:'input_text',text:INSTRUCTIONS}]},{role:'user',content:[{type:'input_image',image_url:image},{type:'input_text',text:'工程类型：'+(txt(body.type,100)||'未填写')+'。适用规范：'+(txt(body.standards,800)||'未填写')+'。检查部位：'+txt(body.part,300)+'。现场说明：'+txt(body.note,800)}]}]})
