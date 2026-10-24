@@ -14,6 +14,7 @@ work_type写从照片和检查人说明判断的工程类型及作业内容，�
 输出一个合法JSON对象，不要Markdown；字符串内不要使用英文双引号，需要引用时用「」。结构：
 {"findings":[{"kind":"engineering|verification|image_quality","title":"简短问题标题","description":"部位和可见事实","evidence":"照片中直接可见的依据","risk":"高|中|低","severity":"一般隐患|不符合项|一般缺陷","deadline":"整改时限建议","rectification":"可执行整改建议","consequence":"可能导致的后果","basis":[{"code":"规范编号，未知留空","name":"规范名称","clause":"条号，未知留空","requirement":"要求概述"}],"bbox":[100,100,400,600]}],"questions":[{"q":"需要现场核实的问题","affects":[1]}],"quality_notes":["照片质量说明，没有则为空数组"],"work_type":"工程类型及作业内容","suggested_standards":["JGJ 130 建筑施工扣件式钢管脚手架安全技术规范"]}
 affects对应findings中从1开始的问题序号。最多输出10项；没有可见问题时findings为空数组。`;
+const FAST_INSTRUCTIONS=`快速识别模式，以下要求优先于上文：只列风险最高、最明确的5项以内问题；description、evidence、consequence、rectification每项不超过40字；basis最多1项，requirement不超过40字；questions最多3条；quality_notes最多2条；work_type可留空，suggested_standards返回空数组。`;
 const DEEP_INSTRUCTIONS=`深度思考模式：先把照片按作业面、架体、临边防护、用电、材料堆放、人员作业等区域逐一检查，不遗漏可见区域。
 列出问题后逐条复核：证据是否在照片中直接可见、部位描述是否准确、引用的规范是否与该作业相符；依赖推测的问题改放入questions。条号只在有把握时填写。`;
 
@@ -78,8 +79,8 @@ async function handler(req,res) {
     const response=await fetch('https://ark.cn-beijing.volces.com/api/v3/responses',{
       method:'POST',signal:AbortSignal.timeout(deep?170000:110000),
       headers:{Authorization:`Bearer ${apiKey}`,'Content-Type':'application/json'},
-      body:JSON.stringify({model,max_output_tokens:deep?20000:7000,thinking:{type:deep?'enabled':'disabled'},text:{format:{type:'json_schema',name:'inspection_result',strict:true,schema}},
-        input:[{role:'system',content:[{type:'input_text',text:deep?INSTRUCTIONS+'\n'+DEEP_INSTRUCTIONS:INSTRUCTIONS}]},{role:'user',content:[{type:'input_image',image_url:image},{type:'input_text',text:'工程类型：'+(txt(body.type,100)||'未填写')+'。适用规范：'+(txt(body.standards,800)||'未填写')+'。检查部位：'+txt(body.part,300)+'。现场说明：'+txt(body.note,800)}]}]})
+      body:JSON.stringify({model,max_output_tokens:deep?20000:4000,thinking:{type:deep?'enabled':'disabled'},text:{format:{type:'json_schema',name:'inspection_result',strict:true,schema}},
+        input:[{role:'system',content:[{type:'input_text',text:INSTRUCTIONS+'\n'+(deep?DEEP_INSTRUCTIONS:FAST_INSTRUCTIONS)}]},{role:'user',content:[{type:'input_image',image_url:image},{type:'input_text',text:'工程类型：'+(txt(body.type,100)||'未填写')+'。适用规范：'+(txt(body.standards,800)||'未填写')+'。检查部位：'+txt(body.part,300)+'。现场说明：'+txt(body.note,800)}]}]})
     });
     if(!response.ok) {
       let detail={};try{detail=await response.json()}catch{}
@@ -93,7 +94,7 @@ async function handler(req,res) {
     if(data.status==='failed'||data.error)return res.status(502).json({error:'模型未完成分析，请稍后重试',code:'MODEL_FAILED',requestId});
     const text=(data.output||[]).filter(x=>x.type==='message').flatMap(x=>x.content||[]).filter(x=>x.type==='output_text'&&typeof x.text==='string').map(x=>x.text).join('');
     let parsed;try{parsed=parseModelText(text)}catch{log('invalid_model_json',{textLength:text.length,outputTypes:(data.output||[]).map(x=>x.type),textHead:text.slice(0,300),textTail:text.slice(-300)});return res.status(502).json({error:'模型返回的记录无法解析，请稍后重试',code:text.length?'INVALID_MODEL_JSON':'EMPTY_MODEL_TEXT',requestId,usage:data.usage||null,diagnostic:{outputCount:(data.output||[]).length,text:text.slice(0,12000)}})}
-    const result=normalize(parsed);log('analysis_completed',{findingCount:result.findings.length});
+    const result=normalize(parsed);log('analysis_completed',{mode:deep?'deep':'fast',model,findingCount:result.findings.length,boxedCount:result.findings.filter(f=>f.bbox).length,outputTokens:data.usage?.output_tokens});
     return res.status(200).json({...result,usage:data.usage||null,model:data.model||model,mode:deep?'deep':'fast',requestId,elapsedMs:Date.now()-started});
   } catch(e) {
     log('analysis_failed',{errorType:e.name});
