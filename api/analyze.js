@@ -4,6 +4,7 @@ const INSTRUCTIONS = `你是施工现场检查辅助工具。仅依据提供的�
 规范依据仅作建议，只有确定时填写编号和名称，条号不确定时留空，不得声称已核验。
 检查人提供了工程类型时，按该类工程的作业特点判断；提供了适用规范时，依据优先从这些规范中选择，没有对应要求时才引用其他规范。
 consequence写该问题可能导致的后果，只写由可见事实能合理推出的后果，不夸大。
+work_type写从照片和检查人说明判断的工程类型及作业内容，如「铁路桥梁墩身支架施工」；suggested_standards列出对该作业最适用的现行规范，每项写「编号 名称」，最多5项，不确定的不列。
 疑似问题写明需核实条件，不自动判定重大事故隐患，不对整个工程作合格判断。
 先判断拍摄视角，俯拍、仰拍不等于倒置。没有可靠方向证据不得声称照片倒置或旋转。
 照片模糊、翻拍、遮挡、曝光、方向无法确认只能进入quality_notes，不是工程缺陷，不得作为隐患编号或引用整改规范。照片质量差不影响记录照片中仍能看清的现场状态。
@@ -11,7 +12,7 @@ consequence写该问题可能导致的后果，只写由可见事实能合理推
 逐项检查照片可见的防护、作业面、架体、用电及实体质量。不同部位、不同缺陷或需要不同整改措施的问题分别列项；不要把安全网缺失与安全网破损合成一项，也不要把同一事实重复拆分。证据不足的内容放入questions，不为增加数量而推断缺陷。
 每个可定位问题返回bbox=[左,上,右,下]，以整张图片左上角为原点，宽和高分别归一化为0到1000。框选问题实际所在区域，不能一律返回整张图；无法可靠定位则返回null。
 输出一个合法JSON对象，不要Markdown；字符串内不要使用英文双引号，需要引用时用「」。结构：
-{"findings":[{"kind":"engineering|verification|image_quality","title":"简短问题标题","description":"部位和可见事实","evidence":"照片中直接可见的依据","risk":"高|中|低","severity":"一般隐患|不符合项|一般缺陷","deadline":"整改时限建议","rectification":"可执行整改建议","consequence":"可能导致的后果","basis":[{"code":"规范编号，未知留空","name":"规范名称","clause":"条号，未知留空","requirement":"要求概述"}],"bbox":[100,100,400,600]}],"questions":[{"q":"需要现场核实的问题","affects":[1]}],"quality_notes":["照片质量说明，没有则为空数组"]}
+{"findings":[{"kind":"engineering|verification|image_quality","title":"简短问题标题","description":"部位和可见事实","evidence":"照片中直接可见的依据","risk":"高|中|低","severity":"一般隐患|不符合项|一般缺陷","deadline":"整改时限建议","rectification":"可执行整改建议","consequence":"可能导致的后果","basis":[{"code":"规范编号，未知留空","name":"规范名称","clause":"条号，未知留空","requirement":"要求概述"}],"bbox":[100,100,400,600]}],"questions":[{"q":"需要现场核实的问题","affects":[1]}],"quality_notes":["照片质量说明，没有则为空数组"],"work_type":"工程类型及作业内容","suggested_standards":["JGJ 130 建筑施工扣件式钢管脚手架安全技术规范"]}
 affects对应findings中从1开始的问题序号。最多输出10项；没有可见问题时findings为空数组。`;
 
 const txt=(v,n=1600)=>typeof v==='string'?v.slice(0,n):'';
@@ -41,7 +42,8 @@ function normalize(raw) {
   })});
   if(findings.some(f=>!f.title||!f.description))throw new Error('INVALID_FINDING');
   const questions=verification.concat((Array.isArray(raw.questions)?raw.questions:[]).slice(0,10).map(q=>({q:txt(q.q,500),affects:(Array.isArray(q.affects)?q.affects:[]).map(n=>mapping[n]).filter(Boolean)}))).filter(q=>q.q).slice(0,12);
-  return {findings,questions,quality_notes:[...new Set(quality_notes)].slice(0,8)};
+  const suggested_standards=[...new Set((Array.isArray(raw.suggested_standards)?raw.suggested_standards:[]).map(s=>txt(s,150).trim()).filter(Boolean))].slice(0,5);
+  return {findings,questions,quality_notes:[...new Set(quality_notes)].slice(0,8),work_type:txt(raw.work_type,100),suggested_standards};
 }
 
 async function handler(req,res) {

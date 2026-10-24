@@ -12,6 +12,8 @@
   // 正在进行的检查单独存一份，照片较多时不受 localStorage 约 5MB 的限制
   const current=(mode,fn)=>operation(()=>open('zhujian-current','state'),'state',mode,fn);
   const api={snapshot,save:r=>archive('readwrite',s=>s.put(r)),list:async()=>{const rows=await archive('readonly',s=>s.getAll());return rows.sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt))},get:id=>archive('readonly',s=>s.get(id)),
-    saveCurrent:state=>current('readwrite',s=>s.put(state,'current')),loadCurrent:()=>current('readonly',s=>s.get('current'))};
+    saveCurrent:state=>current('readwrite',s=>s.put(state,'current')),loadCurrent:()=>current('readonly',s=>s.get('current')),
+    // 检查人核对过的条款，跨检查保留
+    saveClauses:map=>current('readwrite',s=>s.put(map,'clauses')),loadClauses:()=>current('readonly',s=>s.get('clauses'))};
   if(typeof module!=='undefined'&&module.exports)module.exports=api;else root.InspectionHistory=api;
 })(typeof window!=='undefined'?window:globalThis);
