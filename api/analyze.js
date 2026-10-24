@@ -1,9 +1,11 @@
-
-
+const {schema,parseModelText}=require('../lib/contract.cjs');
 const INSTRUCTIONS = `你是施工现场检查辅助工具。仅依据提供的照片和检查人补充内容记录可见事实。
 不能从照片编造尺寸、检测值、隐蔽状况或具体规范条号；未拍到不等于现场缺失。
 规范依据仅作建议，只有确定时填写编号和名称，条号不确定时留空，不得声称已核验。
 疑似问题写明需核实条件，不自动判定重大事故隐患，不对整个工程作合格判断。
+先判断拍摄视角，俯拍、仰拍不等于倒置。没有可靠方向证据不得声称照片倒置或旋转。
+照片模糊、翻拍、遮挡、曝光、方向无法确认只能进入quality_notes，不是工程缺陷，不得作为隐患编号或引用整改规范。
+每项finding必须有kind和evidence：仅直接可见的工程缺陷为engineering；无法确定是否存在缺陷的事项为verification，只供现场核实。看不到栏杆、漏保、接地线不能直接证明未设置。照片无法判断时允许没有工程问题，不能为了输出而编造。
 逐项检查照片可见的防护、作业面、架体、用电及实体质量。不同部位、不同缺陷或需要不同整改措施的问题分别列项；不要把安全网缺失与安全网破损合成一项，也不要把同一事实重复拆分。证据不足的内容放入questions，不为增加数量而推断缺陷。
 每个可定位问题返回bbox=[左,上,右,下]，以整张图片左上角为原点，宽和高分别归一化为0到1000。框选问题实际所在区域，不能一律返回整张图；无法可靠定位则返回null。
 输出一个JSON对象，不要Markdown，结构：
@@ -18,16 +20,26 @@ function box(value){
 }
 function normalize(raw) {
   if(!raw || !Array.isArray(raw.findings)) throw new Error('INVALID_OUTPUT');
-  const findings=raw.findings.slice(0,10).map(f=>({
-    title:txt(f.title,150),description:txt(f.description),
+  const quality_notes=(Array.isArray(raw.quality_notes)?raw.quality_notes:[]).map(n=>txt(n,500)).filter(Boolean).slice(0,8);
+  const verification=[];
+  const source=raw.findings.map((f,i)=>({f,index:i+1})).filter(({f})=>f&&typeof f==='object');
+  const mapping={};
+  const engineering=source.filter(({f,index})=>{
+    if(f.kind==='image_quality'||/^(照片|图像|画面).*(模糊|倒置|旋转|不清|清晰度|曝光|翻拍)/.test(f.title||'')){quality_notes.push(txt(f.description||f.title,500));return false}
+    if(f.kind==='verification'){verification.push({q:txt(f.description||f.title,500),affects:[]});return false}
+    return true;
+  }).slice(0,10);
+  const findings=engineering.map(({f,index})=>{mapping[index]=Object.keys(mapping).length+1;return ({
+    title:txt(f.title,150),description:txt(f.description),evidence:txt(f.evidence,700),
     risk:['高','中','低'].includes(f.risk)?f.risk:'中',
     severity:['一般隐患','不符合项','一般缺陷'].includes(f.severity)?f.severity:'不符合项',
     deadline:txt(f.deadline,80),rectification:txt(f.rectification),
     basis:(Array.isArray(f.basis)?f.basis:[]).slice(0,4).map(b=>({code:txt(b.code,100),name:txt(b.name,200),clause:txt(b.clause,100),requirement:txt(b.requirement),clause_verified:false})),
     bbox:box(f.bbox),verified:false,decision:'pending'
-  })).filter(f=>f.title&&f.description);
-  const questions=(Array.isArray(raw.questions)?raw.questions:[]).slice(0,10).map(q=>({q:txt(q.q,500),affects:(Array.isArray(q.affects)?q.affects:[]).filter(n=>Number.isInteger(n)&&n>0&&n<=findings.length)})).filter(q=>q.q);
-  return {findings,questions};
+  })});
+  if(findings.some(f=>!f.title||!f.description))throw new Error('INVALID_FINDING');
+  const questions=verification.concat((Array.isArray(raw.questions)?raw.questions:[]).slice(0,10).map(q=>({q:txt(q.q,500),affects:(Array.isArray(q.affects)?q.affects:[]).map(n=>mapping[n]).filter(Boolean)}))).filter(q=>q.q).slice(0,12);
+  return {findings,questions,quality_notes:[...new Set(quality_notes)].slice(0,8)};
 }
 
 async function handler(req,res) {
@@ -55,7 +67,7 @@ async function handler(req,res) {
     const response=await fetch('https://ark.cn-beijing.volces.com/api/v3/responses',{
       method:'POST',signal:AbortSignal.timeout(110000),
       headers:{Authorization:`Bearer ${process.env.ARK_API_KEY.trim()}`,'Content-Type':'application/json'},
-      body:JSON.stringify({model:process.env.ARK_MODEL||'doubao-seed-2-1-pro-260915',max_output_tokens:6000,thinking:{type:'disabled'},text:{format:{type:'json_object'}},
+      body:JSON.stringify({model:process.env.ARK_MODEL||'doubao-seed-2-1-pro-260915',max_output_tokens:7000,thinking:{type:'disabled'},text:{format:{type:'json_schema',name:'inspection_result',strict:true,schema}},
         input:[{role:'system',content:[{type:'input_text',text:INSTRUCTIONS}]},{role:'user',content:[{type:'input_image',image_url:image},{type:'input_text',text:'检查部位：'+txt(body.part,300)+'。现场说明：'+txt(body.note,800)}]}]})
     });
     if(!response.ok) {
@@ -68,12 +80,8 @@ async function handler(req,res) {
     log('model_response_received',{status:data.status,usage:data.usage||null,responseId:data.id});
     if(data.status==='incomplete')return res.status(502).json({error:'模型输出被截断，未生成完整记录，请重试',code:'MODEL_INCOMPLETE',requestId,usage:data.usage||null});
     if(data.status==='failed'||data.error)return res.status(502).json({error:'模型未完成分析，请稍后重试',code:'MODEL_FAILED',requestId});
-    const text=(data.output||[]).filter(x=>x.type==='message').flatMap(x=>x.content||[]).filter(x=>x.type==='output_text').map(x=>x.text).join('');
-    const cleaned=text.trim().replace(/^```(?:json)?\s*/,'').replace(/\s*```$/,'');
-    let parsed;try{parsed=JSON.parse(cleaned)}catch{
-      try{const first=cleaned.indexOf('{'),last=cleaned.lastIndexOf('}');if(first<0||last<=first)throw new Error('NO_JSON');parsed=JSON.parse(cleaned.slice(first,last+1))}
-      catch{log('invalid_model_json',{textLength:text.length});return res.status(502).json({error:'模型已响应，但记录格式不完整，请重试',requestId})}
-    }
+    const text=(data.output||[]).filter(x=>x.type==='message').flatMap(x=>x.content||[]).filter(x=>x.type==='output_text'&&typeof x.text==='string').map(x=>x.text).join('');
+    let parsed;try{parsed=parseModelText(text)}catch{log('invalid_model_json',{textLength:text.length,outputTypes:(data.output||[]).map(x=>x.type)});return res.status(502).json({error:'模型返回的记录无法解析，请稍后重试',code:text.length?'INVALID_MODEL_JSON':'EMPTY_MODEL_TEXT',requestId,usage:data.usage||null})}
     const result=normalize(parsed);log('analysis_completed',{findingCount:result.findings.length});
     return res.status(200).json({...result,usage:data.usage||null,model:data.model||process.env.ARK_MODEL||'doubao-seed-2-1-pro-260915',requestId,elapsedMs:Date.now()-started});
   } catch(e) {
