@@ -4,11 +4,18 @@ const INSTRUCTIONS = `你是施工现场检查辅助工具。仅依据提供的�
 不能从照片编造尺寸、检测值、隐蔽状况或具体规范条号；未拍到不等于现场缺失。
 规范依据仅作建议，只有确定时填写编号和名称，条号不确定时留空，不得声称已核验。
 疑似问题写明需核实条件，不自动判定重大事故隐患，不对整个工程作合格判断。
+逐项检查照片可见的防护、作业面、架体、用电及实体质量。不同部位、不同缺陷或需要不同整改措施的问题分别列项；不要把安全网缺失与安全网破损合成一项，也不要把同一事实重复拆分。证据不足的内容放入questions，不为增加数量而推断缺陷。
+每个可定位问题返回bbox=[左,上,右,下]，以整张图片左上角为原点，宽和高分别归一化为0到1000。框选问题实际所在区域，不能一律返回整张图；无法可靠定位则返回null。
 输出一个JSON对象，不要Markdown，结构：
-{"findings":[{"title":"简短问题标题","description":"部位和可见事实","risk":"高|中|低","severity":"一般隐患|不符合项|一般缺陷","deadline":"整改时限建议","rectification":"可执行整改建议","basis":[{"code":"规范编号，未知留空","name":"规范名称","clause":"条号，未知留空","requirement":"要求概述"}],"bbox":null}],"questions":[{"q":"需要现场核实的问题","affects":[1]}]}
+{"findings":[{"title":"简短问题标题","description":"部位和可见事实","risk":"高|中|低","severity":"一般隐患|不符合项|一般缺陷","deadline":"整改时限建议","rectification":"可执行整改建议","basis":[{"code":"规范编号，未知留空","name":"规范名称","clause":"条号，未知留空","requirement":"要求概述"}],"bbox":[100,100,400,600]}],"questions":[{"q":"需要现场核实的问题","affects":[1]}]}
 affects对应findings中从1开始的问题序号。最多输出10项；没有可见问题时findings为空数组。`;
 
 const txt=(v,n=1600)=>typeof v==='string'?v.slice(0,n):'';
+function box(value){
+  if(!Array.isArray(value)||value.length!==4||!value.every(v=>typeof v==='number'&&Number.isFinite(v)&&v>=0&&v<=1000))return null;
+  const b=value.map(Math.round);
+  return b[2]>b[0]&&b[3]>b[1]?b:null;
+}
 function normalize(raw) {
   if(!raw || !Array.isArray(raw.findings)) throw new Error('INVALID_OUTPUT');
   const findings=raw.findings.slice(0,10).map(f=>({
@@ -17,13 +24,17 @@ function normalize(raw) {
     severity:['一般隐患','不符合项','一般缺陷'].includes(f.severity)?f.severity:'不符合项',
     deadline:txt(f.deadline,80),rectification:txt(f.rectification),
     basis:(Array.isArray(f.basis)?f.basis:[]).slice(0,4).map(b=>({code:txt(b.code,100),name:txt(b.name,200),clause:txt(b.clause,100),requirement:txt(b.requirement),clause_verified:false})),
-    bbox:null,verified:false,decision:'pending'
+    bbox:box(f.bbox),verified:false,decision:'pending'
   })).filter(f=>f.title&&f.description);
   const questions=(Array.isArray(raw.questions)?raw.questions:[]).slice(0,10).map(q=>({q:txt(q.q,500),affects:(Array.isArray(q.affects)?q.affects:[]).filter(n=>Number.isInteger(n)&&n>0&&n<=findings.length)})).filter(q=>q.q);
   return {findings,questions};
 }
 
 async function handler(req,res) {
+  const requestId=require('node:crypto').randomUUID();
+  const started=Date.now();
+  const log=(event,info={})=>console.info(JSON.stringify({requestId,event,elapsedMs:Date.now()-started,...info}));
+  res.setHeader('X-Inspection-Request-Id',requestId);
   res.setHeader('Cache-Control','no-store');
   const allowed=new Set(['https://orangq7.github.io',...(process.env.ALLOWED_ORIGINS||'').split(',').filter(Boolean)]);
   const origin=req.headers.origin;
@@ -39,21 +50,32 @@ async function handler(req,res) {
   if(typeof body==='string'){try{body=JSON.parse(body)}catch{return res.status(400).json({error:'请求格式无效'})}}
   const image=body?.image;
   if(typeof image!=='string'||image.length>3_500_000||!/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(image))return res.status(400).json({error:'请上传小于约2.5MB的图片'});
+  log('model_request_started',{model:process.env.ARK_MODEL||'doubao-seed-2-1-pro-260915'});
   try {
     const response=await fetch('https://ark.cn-beijing.volces.com/api/v3/responses',{
       method:'POST',signal:AbortSignal.timeout(110000),
-      headers:{Authorization:`Bearer ${process.env.ARK_API_KEY}`,'Content-Type':'application/json'},
-      body:JSON.stringify({model:process.env.ARK_MODEL||'doubao-seed-2-1-pro-260915',max_output_tokens:5000,
+      headers:{Authorization:`Bearer ${process.env.ARK_API_KEY.trim()}`,'Content-Type':'application/json'},
+      body:JSON.stringify({model:process.env.ARK_MODEL||'doubao-seed-2-1-pro-260915',max_output_tokens:6000,thinking:{type:'disabled'},
         input:[{role:'system',content:[{type:'input_text',text:INSTRUCTIONS}]},{role:'user',content:[{type:'input_image',image_url:image},{type:'input_text',text:'检查部位：'+txt(body.part,300)+'。现场说明：'+txt(body.note,800)}]}]})
     });
-    if(!response.ok) return res.status(502).json({error:response.status===401?'豆包密钥无效，请检查云端配置':response.status===429?'模型繁忙或额度受限，请稍后重试':'豆包调用失败，请检查模型开通状态',upstreamStatus:response.status});
+    if(!response.ok) {
+      let detail={};try{detail=await response.json()}catch{}
+      const upstreamCode=String(detail.error?.code||'').slice(0,100);
+      log('model_request_failed',{upstreamStatus:response.status,upstreamCode});
+      return res.status(502).json({error:response.status===401?'豆包鉴权失败，请检查云端密钥':response.status===429?'模型繁忙或额度受限，请稍后重试':'豆包调用失败，请检查模型开通状态',upstreamStatus:response.status,upstreamCode,requestId});
+    }
     const data=await response.json();
+    log('model_response_received',{status:data.status,usage:data.usage||null,responseId:data.id});
+    if(data.status==='incomplete')return res.status(502).json({error:'模型输出被截断，未生成完整记录，请重试',code:'MODEL_INCOMPLETE',requestId,usage:data.usage||null});
+    if(data.status==='failed'||data.error)return res.status(502).json({error:'模型未完成分析，请稍后重试',code:'MODEL_FAILED',requestId});
     const text=(data.output||[]).filter(x=>x.type==='message').flatMap(x=>x.content||[]).filter(x=>x.type==='output_text').map(x=>x.text).join('');
     const cleaned=text.trim().replace(/^```(?:json)?\s*/,'').replace(/\s*```$/,'');
-    let parsed;try{parsed=JSON.parse(cleaned)}catch{return res.status(502).json({error:'模型未返回有效记录，请重试'})}
-    return res.status(200).json({...normalize(parsed),usage:data.usage||null});
+    let parsed;try{parsed=JSON.parse(cleaned)}catch{log('invalid_model_json');return res.status(502).json({error:'模型已响应，但记录格式不完整，请重试',requestId})}
+    const result=normalize(parsed);log('analysis_completed',{findingCount:result.findings.length});
+    return res.status(200).json({...result,usage:data.usage||null,model:data.model||process.env.ARK_MODEL||'doubao-seed-2-1-pro-260915',requestId,elapsedMs:Date.now()-started});
   } catch(e) {
-    return res.status(502).json({error:e.name==='TimeoutError'?'识别超时，请稍后重试':'识别暂未完成，请稍后重试'});
+    log('analysis_failed',{errorType:e.name});
+    return res.status(502).json({error:e.name==='TimeoutError'?'等待豆包响应超时，本次未取得识别结果。请稍后重试':'识别暂未完成，请稍后重试',requestId});
   }
 }
 module.exports=handler;
