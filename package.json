@@ -2,6 +2,13 @@
   "name": "zhujian-ai",
   "private": true,
   "version": "1.0.0",
-  "engines": { "node": "22.x" },
-  "scripts": { "test": "node --test tests/*.test.cjs" }
+  "engines": {
+    "node": "22.x"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.cjs"
+  },
+  "dependencies": {
+    "jsonrepair": "^3.15.0"
+  }
 }

@@ -8,8 +8,8 @@ const INSTRUCTIONS = `你是施工现场检查辅助工具。仅依据提供的�
 每项finding必须有kind和evidence：仅直接可见的工程缺陷为engineering；无法确定是否存在缺陷的事项为verification，只供现场核实。看不到栏杆、漏保、接地线不能直接证明未设置。照片无法判断时允许没有工程问题，不能为了输出而编造。
 逐项检查照片可见的防护、作业面、架体、用电及实体质量。不同部位、不同缺陷或需要不同整改措施的问题分别列项；不要把安全网缺失与安全网破损合成一项，也不要把同一事实重复拆分。证据不足的内容放入questions，不为增加数量而推断缺陷。
 每个可定位问题返回bbox=[左,上,右,下]，以整张图片左上角为原点，宽和高分别归一化为0到1000。框选问题实际所在区域，不能一律返回整张图；无法可靠定位则返回null。
-输出一个JSON对象，不要Markdown，结构：
-{"findings":[{"title":"简短问题标题","description":"部位和可见事实","risk":"高|中|低","severity":"一般隐患|不符合项|一般缺陷","deadline":"整改时限建议","rectification":"可执行整改建议","basis":[{"code":"规范编号，未知留空","name":"规范名称","clause":"条号，未知留空","requirement":"要求概述"}],"bbox":[100,100,400,600]}],"questions":[{"q":"需要现场核实的问题","affects":[1]}]}
+输出一个合法JSON对象，不要Markdown；字符串内不要使用英文双引号，需要引用时用「」。结构：
+{"findings":[{"kind":"engineering|verification|image_quality","title":"简短问题标题","description":"部位和可见事实","evidence":"照片中直接可见的依据","risk":"高|中|低","severity":"一般隐患|不符合项|一般缺陷","deadline":"整改时限建议","rectification":"可执行整改建议","basis":[{"code":"规范编号，未知留空","name":"规范名称","clause":"条号，未知留空","requirement":"要求概述"}],"bbox":[100,100,400,600]}],"questions":[{"q":"需要现场核实的问题","affects":[1]}],"quality_notes":["照片质量说明，没有则为空数组"]}
 affects对应findings中从1开始的问题序号。最多输出10项；没有可见问题时findings为空数组。`;
 
 const txt=(v,n=1600)=>typeof v==='string'?v.slice(0,n):'';
@@ -81,7 +81,7 @@ async function handler(req,res) {
     if(data.status==='incomplete')return res.status(502).json({error:'模型输出被截断，未生成完整记录，请重试',code:'MODEL_INCOMPLETE',requestId,usage:data.usage||null});
     if(data.status==='failed'||data.error)return res.status(502).json({error:'模型未完成分析，请稍后重试',code:'MODEL_FAILED',requestId});
     const text=(data.output||[]).filter(x=>x.type==='message').flatMap(x=>x.content||[]).filter(x=>x.type==='output_text'&&typeof x.text==='string').map(x=>x.text).join('');
-    let parsed;try{parsed=parseModelText(text)}catch{log('invalid_model_json',{textLength:text.length,outputTypes:(data.output||[]).map(x=>x.type)});return res.status(502).json({error:'模型返回的记录无法解析，请稍后重试',code:text.length?'INVALID_MODEL_JSON':'EMPTY_MODEL_TEXT',requestId,usage:data.usage||null})}
+    let parsed;try{parsed=parseModelText(text)}catch{log('invalid_model_json',{textLength:text.length,outputTypes:(data.output||[]).map(x=>x.type),textHead:text.slice(0,300),textTail:text.slice(-300)});return res.status(502).json({error:'模型返回的记录无法解析，请稍后重试',code:text.length?'INVALID_MODEL_JSON':'EMPTY_MODEL_TEXT',requestId,usage:data.usage||null,diagnostic:{outputCount:(data.output||[]).length,text:text.slice(0,12000)}})}
     const result=normalize(parsed);log('analysis_completed',{findingCount:result.findings.length});
     return res.status(200).json({...result,usage:data.usage||null,model:data.model||process.env.ARK_MODEL||'doubao-seed-2-1-pro-260915',requestId,elapsedMs:Date.now()-started});
   } catch(e) {
