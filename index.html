@@ -86,12 +86,13 @@ nav button:hover{background:var(--wash)}
 .wait-steps li.done{color:#aaa}
 .wait-steps li.done:before{content:'✓';top:0;left:2px;width:auto;height:auto;border:0;color:#9cc4ab;font-size:12px}
 .wait-refs{margin-top:10px;color:#b5b5b5;font-size:12px;overflow-wrap:anywhere}
-.wait-draft{min-height:1.7em;margin:10px 0 0;color:#cfcfcf;filter:blur(1.5px);letter-spacing:1px;user-select:none}
+.wait-steps li.found{color:#777}
+.wait-steps li.found:before{top:.75em;width:8px;height:1px;border:0;border-radius:0;background:#ccc}
 @keyframes wait-pulse{50%{background:#e3e3e3}}
 /* 结果返回时从朦胧变清晰 */
 .reveal .risk-hero,.reveal .card,.reveal .suggest,.reveal .support,.reveal .empty{animation:reveal .6s ease-out both}
 @keyframes reveal{from{opacity:0;filter:blur(6px)}to{opacity:1;filter:none}}
-@media(prefers-reduced-motion:reduce){.wait-steps li.active:before,.reveal *{animation:none!important}.wait-draft{display:none}}
+@media(prefers-reduced-motion:reduce){.wait-steps li.active:before,.reveal *{animation:none!important}}
 .support{padding:14px 22px;border-top:1px solid var(--line)}
 .runinfo{padding:10px 22px;border-top:1px solid var(--line);color:#999;font-size:12px;overflow-wrap:anywhere}
 .suggest{padding:14px 22px;border-top:1px solid var(--line);background:#fffbea}
@@ -429,14 +430,22 @@ function riskHero(p){const list=p.findings.filter(f=>f.decision!=='rejected'),hi
 const API_BASES=/(^|\.)zhujianai\.site$|\.vercel\.app$/.test(location.hostname)?['']:['https://www.zhujianai.site','https://zhujian-seven.vercel.app'];
 // 后台等模型最多 150 秒，网页再多留上传和返回的时间
 async function callAnalyze(body,timeout=170000){let last;for(const base of API_BASES){try{return await fetch(base+'/api/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body,signal:AbortSignal.timeout(timeout)})}catch(e){last=e;if(e.name!=='TypeError')throw e}}throw last}
-// 等待面板：模型不汇报进度，步骤按经验时长依次打勾，最后一步一直「进行中」直到结果返回；
-// 参考信息只列真实发给模型的工程类型和适用规范；模糊草稿字只是装饰
-const WAIT_STEPS=[['上传照片',0],['识别作业场景',3],['检查临边与防护',8],['检查架体与安全网',15],['检查临时用电',22],['检查材料与作业面',30],['对照规范条文',38],['整理检查记录',46]];
-const DRAFTS=['东侧作业面 临边 防护栏杆 挡脚板 未见设置','架体 立杆 扣件 剪刀撑 连墙件 安全网封闭','配电箱 箱门 漏电保护 电缆架空 接地','依据 条款 要求 整改措施 整改时限 复查'];
-let draft={i:0,n:0},revealAt=0;
-function waitHtml(p){const t=(Date.now()-p.busySince)/1000,cur=WAIT_STEPS.findLastIndex(([,s])=>t>=s),refs=[project.type,...(project.standards||'').split('\n')].map(s=>(s||'').trim()).filter(Boolean);return `<div class="analysis-wait" role="status"><div class="wait-head">正在识别 · ${Math.floor(t)} 秒</div><ul class="wait-steps">${WAIT_STEPS.map(([s],i)=>`<li class="${i<cur?'done':i===cur?'active':''}">${s}</li>`).join('')}</ul><div class="wait-refs">${refs.length?'参考：'+refs.map(esc).join(' · '):'未填写适用规范，按常用施工安全规范判断'}</div><p class="wait-draft" aria-hidden="true">${esc(DRAFTS[draft.i].slice(0,draft.n))}</p></div>`}
-function tickWait(){const p=photos[sel],el=document.querySelector('.analysis-wait');if(!p?.busy||!el)return;draft.n++;if(draft.n>DRAFTS[draft.i].length+10)draft={i:(draft.i+1)%DRAFTS.length,n:0};el.outerHTML=waitHtml(p)}
-async function analyzePhoto(p){p.busy=true;p.busySince=Date.now();p.error='';draft={i:0,n:0};render();const began=p.busySince;const timer=setInterval(tickWait,150);try{const res=await callAnalyze(JSON.stringify({image:p.image,type:project.type,standards:project.standards,part:project.part,note:p.note}));if(res.status===504)throw Error('后台执行超时，本次未取得结果。请稍后重试');if(res.status===413)throw Error('照片过大，请压缩后重试');let result;try{result=await res.json()}catch{throw Error('后台未返回有效数据，请检查后台网址')}if(!res.ok&&result.diagnostic)console.warn('模型原始输出',result.requestId,result.diagnostic);if(!res.ok)throw Error((result.error||'识别失败')+(result.upstreamCode?' ['+result.upstreamCode+']':'')+(result.requestId?' · 请求 '+result.requestId:''));p.history=p.history||[];if(p.analyzed)p.history.push({at:new Date().toISOString(),findings:p.findings,questions:p.questions});result.findings.forEach(applyVerified);p.findings=result.findings;p.questions=result.questions;p.quality_notes=result.quality_notes||[];p.work_type=result.work_type||'';p.suggested_standards=result.suggested_standards||[];p.analyzed=true;p.elapsed=Math.round((Date.now()-began)/1000);p.usage=result.usage;p.model=result.model;p.requestId=result.requestId;p.busy=false;open=0;revealAt=Date.now();persist();render();toast(p.findings.length?'识别完成，请逐项确认':'识别完成，照片范围内未检出明确问题');document.querySelector('.results')?.scrollIntoView({behavior:'smooth',block:'start'})}catch(e){p.busy=false;p.error=e.name==='TimeoutError'||e.name==='AbortError'?'等了 '+Math.round((Date.now()-began)/1000)+' 秒仍未收到结果，可能是网络不稳定或照片内容较多。请稍后点「重新识别」，或换个网络再试':e.name==='TypeError'?'无法连接识别服务，可能是网络或地区限制。请换个网络稍后重试，或先手动添加问题':e.message;persist();render();toast(p.error)}finally{clearInterval(timer)}}
+// 等待面板只显示真实进度：后台流式转发的「照片已送达」「模型开始分析」、模型已写完的问题标题和写作阶段；
+// 参考信息只列真实发给模型的工程类型和适用规范
+let revealAt=0;
+function waitHtml(p){const g=p.progress||{},t=Math.floor((Date.now()-p.busySince)/1000),refs=[project.type,...(project.standards||'').split('\n')].map(s=>(s||'').trim()).filter(Boolean),li=(cls,s)=>`<li class="${cls}">${esc(s)}</li>`,rows=[li(g.started?'done':'active',g.started?'照片已送达':'正在上传照片')];
+  if(g.started)rows.push(li(g.writing?'done':'active',g.writing?'模型开始分析':'等待模型开始分析'));
+  for(const f of g.findings||[])rows.push(li('found',(f.kind==='verification'?'待核实：':'发现：')+f.title));
+  if(g.writing)rows.push(!g.questions?li('active',g.findings?.length?'继续查看照片':'正在查看照片'):li(g.standards?'done':'active','整理核实问题与补拍建议'));
+  if(g.standards)rows.push(li('active','推荐适用规范'));
+  return `<div class="analysis-wait" role="status"><div class="wait-head">正在识别 · ${t} 秒</div><ul class="wait-steps">${rows.join('')}</ul><div class="wait-refs">${refs.length?'参考：'+refs.map(esc).join(' · '):'未填写适用规范，按常用施工安全规范判断'}</div></div>`}
+function refreshWait(){const p=photos[sel],el=document.querySelector('.analysis-wait');if(p?.busy&&el)el.outerHTML=waitHtml(p)}
+const errorText=r=>(r.error||'识别失败')+(r.upstreamCode?' ['+r.upstreamCode+']':'')+(r.requestId?' · 请求 '+r.requestId:'');
+// 读取流式结果：逐行更新进度，最后一行是 result 或 error；浏览器不支持逐块读取时整段读完再解析
+async function readStream(res,p){const g=p.progress={};let last=null,buf='';const take=chunk=>{buf+=chunk;let i;while((i=buf.indexOf('\n'))>=0){const line=buf.slice(0,i).trim();buf=buf.slice(i+1);if(!line)continue;let e;try{e=JSON.parse(line)}catch{continue}if(e.type==='started')g.started=true;else if(e.type==='stage'){g.started=true;g[e.stage]=true}else if(e.type==='finding')(g.findings=g.findings||[]).push({kind:e.kind,title:e.title});else if(e.type==='result'||e.type==='error')last=e}refreshWait()};
+  if(res.body?.getReader){const rd=res.body.getReader(),dec=new TextDecoder();for(;;){const {done,value}=await rd.read();if(done)break;take(dec.decode(value,{stream:true}))}}else take(await res.text());take('\n');
+  if(!last)throw Error('识别连接中断，未收到完整结果，请点「重新识别」');if(last.type==='error'){if(last.diagnostic)console.warn('模型原始输出',last.requestId,last.diagnostic);throw Error(errorText(last))}return last}
+async function analyzePhoto(p){p.busy=true;p.busySince=Date.now();p.progress={};p.error='';render();const began=p.busySince;const timer=setInterval(refreshWait,1000);try{const res=await callAnalyze(JSON.stringify({image:p.image,stream:true,type:project.type,standards:project.standards,part:project.part,note:p.note}));if(res.status===504)throw Error('后台执行超时，本次未取得结果。请稍后重试');if(res.status===413)throw Error('照片过大，请压缩后重试');let result;if((res.headers.get('content-type')||'').includes('ndjson'))result=await readStream(res,p);else{try{result=await res.json()}catch{throw Error('后台未返回有效数据，请检查后台网址')}if(!res.ok&&result.diagnostic)console.warn('模型原始输出',result.requestId,result.diagnostic);if(!res.ok)throw Error(errorText(result))}p.history=p.history||[];if(p.analyzed)p.history.push({at:new Date().toISOString(),findings:p.findings,questions:p.questions});result.findings.forEach(applyVerified);p.findings=result.findings;p.questions=result.questions;p.quality_notes=result.quality_notes||[];p.work_type=result.work_type||'';p.suggested_standards=result.suggested_standards||[];p.analyzed=true;p.elapsed=Math.round((Date.now()-began)/1000);p.usage=result.usage;p.model=result.model;p.requestId=result.requestId;p.busy=false;open=0;revealAt=Date.now();persist();render();toast(p.findings.length?'识别完成，请逐项确认':'识别完成，照片范围内未检出明确问题');document.querySelector('.results')?.scrollIntoView({behavior:'smooth',block:'start'})}catch(e){p.busy=false;p.error=e.name==='TimeoutError'||e.name==='AbortError'?'等了 '+Math.round((Date.now()-began)/1000)+' 秒仍未收到结果，可能是网络不稳定或照片内容较多。请稍后点「重新识别」，或换个网络再试':e.name==='TypeError'?'无法连接识别服务，可能是网络或地区限制。请换个网络稍后重试，或先手动添加问题':e.message;persist();render();toast(p.error)}finally{clearInterval(timer)}}
 
 document.addEventListener('click',e=>{if(!e.target.closest('[data-analyze]'))return;const p=photos[sel];if(p&&!p.busy)analyzePhoto(p)});
 const analyzeButton=(p,cls)=>`<button class="${cls}" data-analyze>${p.analyzed?'重新识别':'开始识别'}</button>`;
