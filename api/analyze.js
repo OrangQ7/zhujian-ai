@@ -97,7 +97,7 @@ async function handler(req,res) {
     const result=normalize(parsed);log('analysis_completed',{mode:deep?'deep':'fast',model,findingCount:result.findings.length,boxedCount:result.findings.filter(f=>f.bbox).length,outputTokens:data.usage?.output_tokens});
     return res.status(200).json({...result,usage:data.usage||null,model:data.model||model,mode:deep?'deep':'fast',requestId,elapsedMs:Date.now()-started});
   } catch(e) {
-    log('analysis_failed',{errorType:e.name});
+    log('analysis_failed',{errorType:e.name,message:String(e.message).slice(0,200),cause:String(e.cause?.code||e.cause?.message||'').slice(0,200)});
     return res.status(502).json({error:e.name==='TimeoutError'?'等待豆包响应超时，本次未取得识别结果。请稍后重试':'识别暂未完成，请稍后重试',requestId});
   }
 }
